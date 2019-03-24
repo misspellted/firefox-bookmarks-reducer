@@ -1,5 +1,6 @@
 import os
 import re
+import json
 
 from xml.etree import ElementTree as ET
 
@@ -21,6 +22,14 @@ class BookmarkFileReader(object):
     def extractBookmarks(self, filePath):
         return None
 
+class BookmarkParser(object):
+    def extension(self):
+        return None
+
+    def parseBookmark(self, bookmark):
+        # Return the "not implemented" tuple (failure to parse a link).
+        return (None, None)
+
 class HtmlBookmarkFileReader(BookmarkFileReader):
     def extension(self):
         return ".html"
@@ -40,16 +49,12 @@ class HtmlBookmarkFileReader(BookmarkFileReader):
 
         return htmlBookmarks
 
-class HtmlBookmarkParser(object):
+class HtmlBookmarkParser(BookmarkParser):
     def extension(self):
         return ".html"
 
-    def parseBookmarkText(self, bookmarkText):
-        # Return the "not implemented" tuple (failure to parse a link).
-        return (None, None)
-
 class XmlHtmlBookmarkParser(HtmlBookmarkParser):
-    def parseBookmarkText(self, bookmarkText):
+    def parseBookmark(self, bookmarkText):
         link, text = None, None
 
         try:
@@ -70,7 +75,7 @@ class XmlHtmlBookmarkParser(HtmlBookmarkParser):
         return (link, text)
 
 class RgxHtmlBookmarkParser(HtmlBookmarkParser):
-    def parseBookmarkText(self, bookmarkText):
+    def parseBookmark(self, bookmarkText):
         link, text = None, None
 
         hrefMatch = re.search(r"HREF=\".*?\"", bookmarkText)
@@ -89,6 +94,53 @@ class RgxHtmlBookmarkParser(HtmlBookmarkParser):
         else:
             # Reporting the error message in the text field.
             text = "Unable to match end of opening tag and opening of end tag of HTML anchor element."
+
+        return (link, text)
+
+class JsonBookmarkFileReader(BookmarkFileReader):
+    def extension(self):
+        return ".json"
+
+    def processJsonNode(self, jsonNode):
+        jsonBookmarks = list()
+
+        if "type" in jsonNode:
+            type = jsonNode["type"]
+            if type == "text/x-moz-place-container":
+                if "children" in jsonNode:
+                    children = jsonNode["children"]
+
+                    for child in children:
+                        jsonBookmarks.extend(self.processJsonNode(child))
+            elif type == "text/x-moz-place":
+                jsonBookmarks.append(jsonNode)
+
+        return jsonBookmarks
+
+    def extractBookmarks(self, filePath):
+        # The bookmarks in JSON format start out at a "placesRoot" object. There are several locations a bookmark
+        # could be stored, as containers of the placesRoot container; use recursion to extract the bookmarks.
+        with open(filePath, "r") as jsonFile:
+            return self.processJsonNode(json.load(jsonFile))
+
+class JsonBookmarkParser(BookmarkParser):
+    def extension(self):
+        return ".json"
+
+    def parseBookmark(self, bookmark):
+        link, text = None, None
+
+        if "uri" in bookmark:
+            link = bookmark["uri"]
+
+            if "title" in bookmark:
+                text = bookmark["title"]
+            else:
+                # Copy the link as the text, if the title field is not present.
+                text = link
+        else:
+            # Report the error message in the text field.
+            text = "uri field missing in JSON node."
 
         return (link, text)
 
@@ -113,11 +165,13 @@ def main():
     readers = dict()
 
     addReader(readers, HtmlBookmarkFileReader())
+    addReader(readers, JsonBookmarkFileReader())
 
     parsers = dict()
 
     addParser(parsers, XmlHtmlBookmarkParser())
     addParser(parsers, RgxHtmlBookmarkParser())
+    addParser(parsers, JsonBookmarkParser())
 
     # Generate a list of files that contain bookmarks.
     filePaths = list()
@@ -133,9 +187,9 @@ def main():
     for filePath in filePaths:
         print(filePath)
 
-        ignored, extension = os.path.splitext(filePath)
+        fileName, extension = os.path.splitext(filePath)
 
-        if extension in parsers and extension in readers:
+        if "bookmarks" in fileName and extension in parsers and extension in readers:
             fileReaders = readers[extension]
             fileParsers = parsers[extension]
 
@@ -149,7 +203,7 @@ def main():
                 link, text = None, None
 
                 for fileParser in fileParsers:
-                    link, text = fileParser.parseBookmarkText(fileBookmark)
+                    link, text = fileParser.parseBookmark(fileBookmark)
 
                     if not link is None:
                         break
@@ -165,7 +219,8 @@ def main():
             allFailures.extend(failures)
 
         else:
-            print(f"\t...// TODO: Add support for %s bookmark files." % extension)
+#            print(f"\t...// TODO: Add support for %s bookmark files." % extension)
+            pass
 
     # Display any errors encountered.
     for error, unparsed in allFailures:
